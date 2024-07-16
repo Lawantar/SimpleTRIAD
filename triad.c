@@ -30,7 +30,7 @@ void GetSunDirection(F_64 julDate, F_64 *sun_dir) {
 
 // Рассчитывает магнитное поле в ITRF
 // Аргументы:
-// r - Радиус-вектор спутника в ITRF [метры] (3x1)
+// r - Радиус-вектор спутника в ITRF [м]
 // earth_dipole - Магнитуда земного диполя [м^3*кг/с^2/А]
 // mag_field_GF - Массив из 3х элементов для сохранения магнитного поля
 
@@ -46,6 +46,24 @@ void getMagFieldInclinedDipole(const F_64 *r, F_64 earth_dipole, F_64 *mag_field
     for (SI_32 i = 0; i < 3; i++) {
         mag_field_GF[i] = -earth_dipole * (k[i] * norm_r * norm_r - 3.0 * k_dot_r * r[i]) / pow(norm_r, 5);
     }
+}
+
+// Вычисляет вектор направления в центр Зелми из текущего положения спутника по данным ГЛОНАСС
+// Аргументы:
+// lat - Широта [град]
+// lon - Долгота [град]
+// height - Высота по данным ГЛОНАСС [м]
+// *nadir - Массив из 3х элементов для сохранения вектора в надир [м]
+
+void GetNadirFromGeo(F_64 lat, F_64 lon, F_64 height, F_64 *nadir) {
+    F_64 clat = cos(lat * DEGREES_TO_RADIANS);
+    F_64 slat = sin(lat * DEGREES_TO_RADIANS);
+    F_64 clon = cos(lon * DEGREES_TO_RADIANS);
+    F_64 slon = sin(lon * DEGREES_TO_RADIANS);
+    F_64 N = 6378137.0 / sqrt(1.0 - 6.6943799901377997e-3 * slat * slat);
+    nadir[0] = -1 * (N + height) * clat * clon;
+    nadir[1] = -1 * (N + height) * clat * slon;
+    nadir[2] = -1 * (N * (1.0 - 6.6943799901377997e-3) + height) * slat;
 }
 
 // Вычисляет матрицу поворота из инерциальной системы координат (GCRF) в систему координат Гринвича (ITRF)
