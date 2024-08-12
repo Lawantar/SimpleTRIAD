@@ -29,4 +29,6 @@ void matInv(const F_64 matrix[9], F_64 inv[9]);
 
 void simpleTriad(const F_64 S_meas[3], F_64 B_meas[3], const F_64 S_model[3], F_64 B_model[3], F_64 *matrix);
 
+void prisma(F_64 B_bfa[3], F_64 A[9], F_64 S[3], F_64 W[3], F_64 moment[3]);
+
 #endif

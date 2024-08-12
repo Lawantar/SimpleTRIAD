@@ -171,9 +171,69 @@ void simpleTriad(const F_64 S_meas[3], F_64 B_meas[3], const F_64 S_model[3], F_
     }
     normalize(e3);
     for (SI_32 i = 0; i < 3; i++) {
-        matrix[i * 3] = e1[i];
-        matrix[(i * 3) + 1] = e2[i];
-        matrix[(i * 3) + 2] = e3[i];
+        matrix[i] = e1[i];
+        matrix[i + 3] = e2[i];
+        matrix[i + 6] = e3[i];
     }
+}
+
+// Реализует алгоритм PRISMA
+// Аргументы:
+// B_bfa - Вектор измерения магнитометра (массив 3 элемента)
+// A - Матрица из TRIAD (массив 9 элементов)
+// S - Вектор направления на солнце, рассчитаный по моделе (массив 3 элемента)
+// W - Текущая измеренная угловая скорость (массив 3 элемента)
+// moment - физический момент, рассчитанный алгоритмом (массив 3 элемента)
+
+void prisma(F_64 B_bfa[3], F_64 A[9], F_64 S[3], F_64 W[3], F_64 moment[3]) {
+    B_bfa[0] = 1e-6 * B_bfa[0];
+    B_bfa[1] = 1e-6 * B_bfa[1];
+    B_bfa[2] = 1e-6 * B_bfa[2];
+
+    F_64 e_1[3] = {154.206, 11.364, 1};
+    F_64 X[3] = {1, 0, 0};
+    F_64 Z[3] = {0, 0, 1};
+
+    normalize(e_1);
+
+    F_64 w_0 = 0.1 * M_PI / 180;
+    F_64 k = 1e6;
+
+    F_64 delta[3] = {0, 0, 0};
+    delta[0] = e_1[0] - X[0];
+    delta[1] = e_1[1] - X[1];
+    delta[2] = e_1[2] - X[2];
+    normalize(delta);
+    delta[0] /= 13.5;
+    delta[1] /= 13.5;
+    delta[2] /= 13.5;
+
+    S[0] = S[0] + delta[0];
+    S[1] = S[1] + delta[1];
+    S[2] = S[2] + delta[2];
+    normalize(S);
+
+    F_64 r[3] = {0, 0, 0};
+    cross(S, Z, r);
+
+    F_64 R[3] = {0, 0, 0};
+    for (int i = 0; i < 3; i++) {
+        R[i] = 0;
+        for (int j = 0; j < 3; j++) {
+            R[i] += A[(j * 3) + i] * r[j];
+        }
+    }
+
+    F_64 w_ref[3];
+    for (int i = 0; i < 3; i++) {
+        w_ref[i] = w_0 * (e_1[i] + R[i]);
+    }
+
+    F_64 w_delta[3];
+    for (int i = 0; i < 3; i++) {
+        w_delta[i] = W[i] - w_ref[i];
+    }
+
+    cross(w_delta, B_bfa, moment);
 }
 
