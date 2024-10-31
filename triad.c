@@ -1,116 +1,95 @@
 #include "triad.h"
 #include <math.h>
 
-// Возвращает юлианскую дату.
-// Аргументы:
-// secs - Кол-во секунд, прошедших от 01.01.2000
+model_t model;
 
-F_64 ConvertDateToJD(UI_32 secs) {
-    F_64 year = 2000.0 + (F_64) secs / SEC_PER_YEAR;
-    F_64 cor = 2 - (year / 100) + (year / 400);
-    return JULDAY_CONST + ((year - 1) * 365.25) + cor;
+/* IGNORE */
+mag_orientation_ctrl_t mag_orientation_ctrl;
+sensorics_data_t sensorics_data;
+mag_control_t mag_control;
+/* IGNORE */
+
+void ConvertDateToJD(void) {
+    float year = 2000.0f + (float) secs / SEC_PER_YEAR; //TODO получать на СОП
+    float cor = 2 - (year / 100) + (year / 400);
+    model.jul_date = JULDAY_CONST + ((year - 1) * 365.25) + cor;
 }
 
-// Рассчитывает направление на Солнце, т.е. единичный вектор от Земли к Солнцу. Результат приведен в GCRF.
-// Аргументы:
-// julDate - Юлианская дата
-// sun_dir - Массив из 3х элементов для сохранения направления на Солнце
-
-void GetSunDirection(F_64 julDate, F_64 *sun_dir) {
-    F_64 rad = M_PI / 180.0;
-    F_64 t_cent = (julDate - 2451545.0) / 36525.0;
-    F_64 lambda_m = 280.4606184 + 36000.77005361 * t_cent;
-    F_64 M = (357.5277233 + 35999.05034 * t_cent) * rad;
-    F_64 lambda_elliptic = (lambda_m + 1.914666471 * sin(M) + 0.019994643 * sin(2 * M)) * rad;
-    F_64 eps = (23.439291 - 0.0130042 * t_cent) * rad;
-    sun_dir[0] = cos(lambda_elliptic);
-    sun_dir[1] = cos(eps) * sin(lambda_elliptic);
-    sun_dir[2] = sin(eps) * sin(lambda_elliptic);
+void GetSunDirection(void) {
+    float rad = M_PI / 180.0;
+    float t_cent = (model.jul_date - 2451545.0f) / 36525.0f;
+    float lambda_m = 280.4606184f + 36000.77005361f * t_cent;
+    float M = (357.5277233f + 35999.05034f * t_cent) * rad;
+    float lambda_elliptic = (lambda_m + 1.914666471f * sinf(M) + 0.019994643f * sinf(2 * M)) * rad;
+    float eps = (23.439291f - 0.0130042f * t_cent) * rad;
+    model.sun_model[0] = cosf(lambda_elliptic);
+    model.sun_model[1] = cosf(eps) * sinf(lambda_elliptic);
+    model.sun_model[2] = sinf(eps) * sinf(lambda_elliptic);
 }
 
-// Рассчитывает магнитное поле в ITRF
-// Аргументы:
-// r - Радиус-вектор спутника в ITRF [м]
-// earth_dipole - Магнитуда земного диполя [м^3*кг/с^2/А]
-// mag_field_GF - Массив из 3х элементов для сохранения магнитного поля
-
-void getMagFieldInclinedDipole(const F_64 *r, F_64 earth_dipole, F_64 *mag_field_GF) {
-    F_64 lambda0 = 107.32 * M_PI / 180.0;
-    F_64 delta0 = 9.41 * M_PI / 180.0;
-    F_64 k[3];
-    k[0] = cos(lambda0) * sin(delta0);
-    k[1] = sin(lambda0) * sin(delta0);
-    k[2] = -cos(delta0);
-    F_64 norm_r = sqrt(r[0] * r[0] + r[1] * r[1] + r[2] * r[2]);
-    F_64 k_dot_r = k[0] * r[0] + k[1] * r[1] + k[2] * r[2];
-    for (SI_32 i = 0; i < 3; i++) {
-        mag_field_GF[i] = -earth_dipole * (k[i] * norm_r * norm_r - 3.0 * k_dot_r * r[i]) / pow(norm_r, 5);
-    }
+void GetNadirFromGeo(void) {
+    float clat = cosf(sensorics_data.sens_pos.lat * DEGREES_TO_RADIANS);
+    float slat = sinf(sensorics_data.sens_pos.lat * DEGREES_TO_RADIANS);
+    float clon = cosf(sensorics_data.sens_pos.lon * DEGREES_TO_RADIANS);
+    float slon = sinf(sensorics_data.sens_pos.lon * DEGREES_TO_RADIANS);
+    float N = 6378137.0f / sqrtf(1.0f - 6.6943799901377997e-3f * slat * slat);
+    model.nadir_model[0] = -1 * (N + sensorics_data.sens_pos.alt) * clat * clon;
+    model.nadir_model[1] = -1 * (N + sensorics_data.sens_pos.alt) * clat * slon;
+    model.nadir_model[2] = -1 * (N * (1.0f - 6.6943799901377997e-3f) + sensorics_data.sens_pos.alt) * slat;
 }
 
-// Вычисляет вектор направления в центр Зелми из текущего положения спутника по данным ГЛОНАСС
-// Аргументы:
-// lat - Широта [град]
-// lon - Долгота [град]
-// height - Высота по данным ГЛОНАСС [м]
-// *nadir - Массив из 3х элементов для сохранения вектора в надир [м]
-
-void GetNadirFromGeo(F_64 lat, F_64 lon, F_64 height, F_64 *nadir) {
-    F_64 clat = cos(lat * DEGREES_TO_RADIANS);
-    F_64 slat = sin(lat * DEGREES_TO_RADIANS);
-    F_64 clon = cos(lon * DEGREES_TO_RADIANS);
-    F_64 slon = sin(lon * DEGREES_TO_RADIANS);
-    F_64 N = 6378137.0 / sqrt(1.0 - 6.6943799901377997e-3 * slat * slat);
-    nadir[0] = -1 * (N + height) * clat * clon;
-    nadir[1] = -1 * (N + height) * clat * slon;
-    nadir[2] = -1 * (N * (1.0 - 6.6943799901377997e-3) + height) * slat;
+void GCRFToITRF(void) {
+    const float DJ00 = 2451545.0f;
+    float t_jd_from_J2000 = model.jul_date - DJ00;
+    float theta = 2.0f * (float) M_PI * (0.7790572732640f + 1.00273781191135448f * t_jd_from_J2000);
+    model.gcrf2itrf_matrix[0] = cosf(theta);
+    model.gcrf2itrf_matrix[1] = sinf(theta);
+    model.gcrf2itrf_matrix[2] = 0.0f;
+    model.gcrf2itrf_matrix[3] = -sinf(theta);
+    model.gcrf2itrf_matrix[4] = cosf(theta);
+    model.gcrf2itrf_matrix[5] = 0.0f;
+    model.gcrf2itrf_matrix[6] = 0.0f;
+    model.gcrf2itrf_matrix[7] = 0.0f;
+    model.gcrf2itrf_matrix[8] = 1.0f;
 }
 
-// Вычисляет матрицу поворота из инерциальной системы координат (GCRF) в систему координат Гринвича (ITRF)
-// Аргументы:
-// matrix - Массив из 9 элементов для сохранения матрицы поворота
-// julDate - Юлианская дата
-
-void GCRFToITRF(F_64 *matrix, F_64 julDate) {
-    const F_64 DJ00 = 2451545.0;
-    F_64 t_jd_from_J2000 = julDate - DJ00;
-    F_64 theta = 2 * M_PI * (0.7790572732640 + 1.00273781191135448 * t_jd_from_J2000);
-    matrix[0] = cos(theta);
-    matrix[1] = sin(theta);
-    matrix[2] = 0.0;
-    matrix[3] = -sin(theta);
-    matrix[4] = cos(theta);
-    matrix[5] = 0.0;
-    matrix[6] = 0.0;
-    matrix[7] = 0.0;
-    matrix[8] = 1.0;
-}
-
-void normalize(F_64 v[3]) {
-    F_64 n = sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+void normalize(float v[3]) {
+    float n = sqrtf(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
     if (n != 0) {
-        for (SI_32 i = 0; i < 3; i++) {
+        for (int8_t i = 0; i < 3; i++) {
             v[i] /= n;
         }
     }
 }
 
-void cross(const F_64 a[3], const F_64 b[3], F_64 result[3]) {
+void cross(const float a[3], const float b[3], float result[3]) {
     result[0] = a[1] * b[2] - a[2] * b[1];
     result[1] = a[2] * b[0] - a[0] * b[2];
     result[2] = a[0] * b[1] - a[1] * b[0];
 }
 
-F_64 dot(const F_64 a[3], const F_64 b[3]) {
+float dot(const float a[3], const float b[3]) {
     return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 }
 
-void matInv(const F_64 matrix[9], F_64 inv[9]) {
-    F_64 det = matrix[0] * (matrix[4] * matrix[8] - matrix[5] * matrix[7]) -
-               matrix[1] * (matrix[3] * matrix[8] - matrix[5] * matrix[6]) +
-               matrix[2] * (matrix[3] * matrix[7] - matrix[4] * matrix[6]);
+void vecMatInv(const float matrix[9], const float vector[3]) {
+    float res_vector[3];
+    for (int8_t i = 0; i < 3; i++) {
+        for (int8_t j = 0; j < 3; j++) {
+            res_vector[j] += matrix[(j * 3) + i] * vector[i];
+        }
+    }
+    model.sun_model[0] = res_vector[0];
+    model.sun_model[1] = res_vector[1];
+    model.sun_model[2] = res_vector[2];
+}
+
+void matInv(const float matrix[9], float inv[9]) {
+    float det = matrix[0] * (matrix[4] * matrix[8] - matrix[5] * matrix[7]) -
+                matrix[1] * (matrix[3] * matrix[8] - matrix[5] * matrix[6]) +
+                matrix[2] * (matrix[3] * matrix[7] - matrix[4] * matrix[6]);
     if (det != 0) {
-        F_64 invDet = 1.0 / det;
+        float invDet = 1.0f / det;
         inv[0] = invDet * (matrix[4] * matrix[8] - matrix[5] * matrix[7]);
         inv[1] = invDet * (matrix[2] * matrix[7] - matrix[1] * matrix[8]);
         inv[2] = invDet * (matrix[1] * matrix[5] - matrix[2] * matrix[4]);
@@ -120,120 +99,200 @@ void matInv(const F_64 matrix[9], F_64 inv[9]) {
         inv[6] = invDet * (matrix[3] * matrix[7] - matrix[6] * matrix[4]);
         inv[7] = invDet * (matrix[6] * matrix[1] - matrix[0] * matrix[7]);
         inv[8] = invDet * (matrix[0] * matrix[4] - matrix[3] * matrix[1]);
+        mag_orientation_ctrl.alg_err_flag &= 0xFF - DIV_ZERO_ERR;
     } else {
-        //Error handle
+        mag_orientation_ctrl.alg_err_flag |= DIV_ZERO_ERR;
+        return;
     }
 }
 
-// Реализует алгоритм TRIAD, который рассчитывает матрицу ориентации КА
-// Аргументы:
-// S_meas - Вектор измерения магнитометра (массив 3 элемента)
-// B_meas - Вектор измерения солнечного датчика (массив 3 элемента)
-// S_model - Вектор направления на солнце, рассчитаный по моделе (массив 3 элемента)
-// B_model - Вектор геомагнитного поля, рассчитаный по моделе (массив 3 элемента)
-// A - Матрица ориентации КА (массив 9 элементов)
+uint8_t simpleTriad(void) {
+    // Заполнение model_t
+    ConvertDateToJD();
+    if (sensorics_data.sens_OM_SS.status == 0) {
+        GetSunDirection();
+        GCRFToITRF();
+        vecMatInv(model.gcrf2itrf_matrix, model.sun_model);
+        model.op_mode = SUN_OP_MODE;
+        mag_orientation_ctrl.alg_err_flag &= 0xFF - NO_CORRECT_DATA - NO_SUN_VEC;
+    } else if (sensorics_data.sens_OM_HS.status == 0) {
+        GetNadirFromGeo();
+        //TODO проверить систему координат для надира
+        model.op_mode = NADIR_OP_MODE;
+        mag_orientation_ctrl.alg_err_flag &= 0xFF - NO_CORRECT_DATA;
+        mag_orientation_ctrl.alg_err_flag |= NO_SUN_VEC;
+    } else {
+        mag_orientation_ctrl.alg_err_flag |= NO_CORRECT_DATA;
+        return 1;
+    }
 
-void simpleTriad(const F_64 S_meas[3], F_64 B_meas[3], const F_64 S_model[3], F_64 B_model[3], F_64 *matrix) {
-    normalize(B_meas);
-    normalize(B_model);
-    F_64 cross_S_meas_B_meas[3];
-    F_64 cross_S_model_B_model[3];
-    cross(S_meas, B_meas, cross_S_meas_B_meas);
-    cross(S_model, B_model, cross_S_model_B_model);
-    F_64 D_meas[9] = {S_meas[0], B_meas[0], cross_S_meas_B_meas[0],
-                      S_meas[1], B_meas[1], cross_S_meas_B_meas[1],
-                      S_meas[2], B_meas[2], cross_S_meas_B_meas[2]};
-    F_64 D_model[9] = {S_model[0], B_model[0], cross_S_model_B_model[0],
-                       S_model[1], B_model[1], cross_S_model_B_model[1],
-                       S_model[2], B_model[2], cross_S_model_B_model[2]};
-    F_64 D_model_inv[9];
+    normalize(sensorics_data.sens_ADCS_mag.data_Gs);
+    normalize(model.b_model);
+
+    float cross_V_meas_B_meas[3];
+    float cross_V_model_B_model[3];
+    float D_meas[9];
+    float D_model[9];
+
+    switch (model.op_mode) {
+        case SUN_OP_MODE:
+            cross(sensorics_data.sens_OM_SS.Sun, sensorics_data.sens_ADCS_mag.data_Gs, cross_V_meas_B_meas);
+            cross(model.sun_model, model.b_model, cross_V_model_B_model);
+            D_meas[0] = sensorics_data.sens_OM_SS.Sun[0];
+            D_meas[1] = sensorics_data.sens_ADCS_mag.data_Gs[0];
+            D_meas[2] = cross_V_meas_B_meas[0];
+            D_meas[3] = sensorics_data.sens_OM_SS.Sun[1];
+            D_meas[4] = sensorics_data.sens_ADCS_mag.data_Gs[1];
+            D_meas[5] = cross_V_meas_B_meas[1];
+            D_meas[6] = sensorics_data.sens_OM_SS.Sun[2];
+            D_meas[7] = sensorics_data.sens_ADCS_mag.data_Gs[2];
+            D_meas[8] = cross_V_meas_B_meas[2];
+
+            D_model[0] = model.sun_model[0];
+            D_model[1] = model.b_model[0];
+            D_model[2] = cross_V_model_B_model[0];
+            D_model[3] = model.sun_model[1];
+            D_model[4] = model.b_model[1];
+            D_model[5] = cross_V_model_B_model[1];
+            D_model[6] = model.sun_model[2];
+            D_model[7] = model.b_model[2];
+            D_model[8] = cross_V_model_B_model[2];
+            mag_orientation_ctrl.alg_err_flag &= 0xFF - UNKNOWN_OP_MODE;
+            break;
+
+        case NADIR_OP_MODE:
+            cross(sensorics_data.sens_OM_HS.Nadir, sensorics_data.sens_ADCS_mag.data_Gs, cross_V_meas_B_meas);
+            cross(model.nadir_model, model.b_model, cross_V_model_B_model);
+            D_meas[0] = sensorics_data.sens_OM_HS.Nadir[0];
+            D_meas[1] = sensorics_data.sens_ADCS_mag.data_Gs[0];
+            D_meas[2] = cross_V_meas_B_meas[0];
+            D_meas[3] = sensorics_data.sens_OM_HS.Nadir[1];
+            D_meas[4] = sensorics_data.sens_ADCS_mag.data_Gs[1];
+            D_meas[5] = cross_V_meas_B_meas[1];
+            D_meas[6] = sensorics_data.sens_OM_HS.Nadir[2];
+            D_meas[7] = sensorics_data.sens_ADCS_mag.data_Gs[2];
+            D_meas[8] = cross_V_meas_B_meas[2];
+
+            D_model[0] = model.nadir_model[0];
+            D_model[1] = model.b_model[0];
+            D_model[2] = cross_V_model_B_model[0];
+            D_model[3] = model.nadir_model[1];
+            D_model[4] = model.b_model[1];
+            D_model[5] = cross_V_model_B_model[1];
+            D_model[6] = model.nadir_model[2];
+            D_model[7] = model.b_model[2];
+            D_model[8] = cross_V_model_B_model[2];
+            mag_orientation_ctrl.alg_err_flag &= 0xFF - UNKNOWN_OP_MODE;
+            break;
+
+        default:
+            mag_orientation_ctrl.alg_err_flag |= UNKNOWN_OP_MODE;
+            return 1;
+    }
+
+    float D_model_inv[9];
     matInv(D_model, D_model_inv);
-    for (SI_32 i = 0; i < 3; i++) {
-        for (SI_32 j = 0; j < 3; j++) {
-            matrix[(i * 3) + j] = 0.0;
-            for (SI_32 k = 0; k < 3; k++) {
-                matrix[(i * 3) + j] += D_meas[(i * 3) + k] * D_model_inv[(k * 3) + j];
+    for (int8_t i = 0; i < 3; i++) {
+        for (int8_t j = 0; j < 3; j++) {
+            model.triad_matrix[(i * 3) + j] = 0.0f;
+            for (int8_t k = 0; k < 3; k++) {
+                model.triad_matrix[(i * 3) + j] += D_meas[(i * 3) + k] * D_model_inv[(k * 3) + j];
             }
         }
     }
-    F_64 e1[3] = {matrix[0], matrix[3], matrix[6]};
-    F_64 e2[3] = {matrix[1], matrix[4], matrix[7]};
-    F_64 e3[3] = {matrix[2], matrix[5], matrix[8]};
-    F_64 dot_e1_e2 = dot(e1, e2);
-    for (SI_32 i = 0; i < 3; i++) {
+    float e1[3] = {model.triad_matrix[0], model.triad_matrix[3], model.triad_matrix[6]};
+    float e2[3] = {model.triad_matrix[1], model.triad_matrix[4], model.triad_matrix[7]};
+    float e3[3] = {model.triad_matrix[2], model.triad_matrix[5], model.triad_matrix[8]};
+    float dot_e1_e2 = dot(e1, e2);
+    for (int8_t i = 0; i < 3; i++) {
         e2[i] -= e1[i] * dot_e1_e2;
     }
     normalize(e2);
-    F_64 dot_e1_e3 = dot(e1, e3);
-    F_64 dot_e2_e3 = dot(e2, e3);
-    for (SI_32 i = 0; i < 3; i++) {
+    float dot_e1_e3 = dot(e1, e3);
+    float dot_e2_e3 = dot(e2, e3);
+    for (int8_t i = 0; i < 3; i++) {
         e3[i] -= e1[i] * dot_e1_e3 + e2[i] * dot_e2_e3;
     }
     normalize(e3);
-    for (SI_32 i = 0; i < 3; i++) {
-        matrix[i] = e1[i];
-        matrix[i + 3] = e2[i];
-        matrix[i + 6] = e3[i];
+    for (int8_t i = 0; i < 3; i++) {
+        model.triad_matrix[i] = e1[i];
+        model.triad_matrix[i + 3] = e2[i];
+        model.triad_matrix[i + 6] = e3[i];
     }
+    return 0;
 }
 
-// Реализует алгоритм PRISMA
-// Аргументы:
-// B_bfa - Вектор измерения магнитометра (массив 3 элемента)
-// A - Матрица из TRIAD (массив 9 элементов)
-// S - Вектор направления на солнце, рассчитаный по моделе (массив 3 элемента)
-// W - Текущая измеренная угловая скорость (массив 3 элемента)
-// moment - физический момент, рассчитанный алгоритмом (массив 3 элемента)
+void prisma(void) {
+    if (sensorics_data.sens_ADCS_mag.status != 0) {
+        mag_orientation_ctrl.alg_err_flag |= NO_MAG_DATA;
+        return;
+    }
+    mag_orientation_ctrl.alg_err_flag &= 0xFF - NO_MAG_DATA;
+    if (simpleTriad() == 1) {
+        return;
+    }
 
-void prisma(F_64 B_bfa[3], F_64 A[9], F_64 S[3], F_64 W[3], F_64 moment[3]) {
-    B_bfa[0] = 1e-6 * B_bfa[0];
-    B_bfa[1] = 1e-6 * B_bfa[1];
-    B_bfa[2] = 1e-6 * B_bfa[2];
-
-    F_64 e_1[3] = {154.206, 11.364, 1};
-    F_64 X[3] = {1, 0, 0};
-    F_64 Z[3] = {0, 0, 1};
+    sensorics_data.sens_ADCS_mag.data_Gs[0] = 1e-6f * sensorics_data.sens_ADCS_mag.data_Gs[0];
+    sensorics_data.sens_ADCS_mag.data_Gs[1] = 1e-6f * sensorics_data.sens_ADCS_mag.data_Gs[1];
+    sensorics_data.sens_ADCS_mag.data_Gs[2] = 1e-6f * sensorics_data.sens_ADCS_mag.data_Gs[2];
+    float moment[3] = {0};
+    float e_1[3] = {154.206f, 11.364f, 1};
+    float X[3] = {1, 0, 0};
+    float Z[3] = {0, 0, 1};
 
     normalize(e_1);
 
-    F_64 w_0 = 0.1 * M_PI / 180;
-    F_64 k = 1e6;
+    float w_0 = 0.1f * (float) M_PI / 180.0f;
+    float k = 1e6f;
 
-    F_64 delta[3] = {0, 0, 0};
+    float delta[3] = {0, 0, 0};
     delta[0] = e_1[0] - X[0];
     delta[1] = e_1[1] - X[1];
     delta[2] = e_1[2] - X[2];
     normalize(delta);
-    delta[0] /= 13.5;
-    delta[1] /= 13.5;
-    delta[2] /= 13.5;
+    delta[0] /= 13.5f;
+    delta[1] /= 13.5f;
+    delta[2] /= 13.5f;
 
-    S[0] = S[0] + delta[0];
-    S[1] = S[1] + delta[1];
-    S[2] = S[2] + delta[2];
-    normalize(S);
+    float r[3] = {0, 0, 0};
 
-    F_64 r[3] = {0, 0, 0};
-    cross(S, Z, r);
+    switch (model.op_mode) {
+        case SUN_OP_MODE:
+            model.sun_model[0] = model.sun_model[0] + delta[0];
+            model.sun_model[1] = model.sun_model[1] + delta[1];
+            model.sun_model[2] = model.sun_model[2] + delta[2];
+            normalize(model.sun_model);
+            cross(model.sun_model, Z, r);
+        case NADIR_OP_MODE:
+            model.nadir_model[0] = model.nadir_model[0] + delta[0];
+            model.nadir_model[1] = model.nadir_model[1] + delta[1];
+            model.nadir_model[2] = model.nadir_model[2] + delta[2];
+            normalize(model.nadir_model);
+            cross(model.nadir_model, Z, r);
+        default:
+            break;
+    }
 
-    F_64 R[3] = {0, 0, 0};
-    for (int i = 0; i < 3; i++) {
+    float R[3] = {0, 0, 0};
+    for (int8_t i = 0; i < 3; i++) {
         R[i] = 0;
-        for (int j = 0; j < 3; j++) {
-            R[i] += A[(j * 3) + i] * r[j];
+        for (int8_t j = 0; j < 3; j++) {
+            R[i] += model.triad_matrix[(j * 3) + i] * r[j];
         }
     }
 
-    F_64 w_ref[3];
-    for (int i = 0; i < 3; i++) {
+    float w_ref[3];
+    for (int8_t i = 0; i < 3; i++) {
         w_ref[i] = w_0 * (e_1[i] + R[i]);
     }
 
-    F_64 w_delta[3];
-    for (int i = 0; i < 3; i++) {
-        w_delta[i] = W[i] - w_ref[i];
+    float w_delta[3];
+    for (int8_t i = 0; i < 3; i++) {
+        w_delta[i] = sensorics_data.sens_ADCS_GA.gyro_dps[i] - w_ref[i];
     }
-
-    cross(w_delta, B_bfa, moment);
+    cross(w_delta, sensorics_data.sens_ADCS_mag.data_Gs, moment);
+    //TODO Проверка на "norm(moment) > 0.25"
+    mag_control.mag_moment[0] = moment[0] * k;
+    mag_control.mag_moment[1] = moment[1] * k;
+    mag_control.mag_moment[2] = moment[2] * k;
 }
-
